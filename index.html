@@ -27,7 +27,7 @@
 
     .card {
       width: 100%;
-      max-width: 470px;
+      max-width: 480px;
       background: rgba(15, 23, 42, .95);
       border: 1px solid rgba(148, 163, 184, .25);
       border-radius: 24px;
@@ -210,6 +210,18 @@
       font-weight: bold;
     }
 
+    .monitor {
+      display: none;
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 15px;
+      background: rgba(59,130,246,.10);
+      border: 1px solid rgba(59,130,246,.28);
+      color: #bfdbfe;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
     .footer {
       margin-top: 18px;
       text-align: center;
@@ -235,8 +247,9 @@
     </p>
 
     <div class="warning">
-      ⚠️ Este acceso será validado con licencia. Después de entregar el acceso,
-      puedes revisar o eliminar manualmente la licencia desde tu panel de KeyAuth.
+      ⚠️ Este acceso será validado con licencia. La página revisará cada 10 segundos
+      si la licencia sigue activa. Si la licencia es eliminada, vencida o bloqueada,
+      el acceso se cerrará automáticamente.
     </div>
 
     <label for="licenseInput">Licencia</label>
@@ -264,6 +277,10 @@
 
     <div id="statusBox" class="status"></div>
 
+    <div id="monitorBox" class="monitor">
+      🔄 Verificación activa: la licencia se revisa automáticamente cada 10 segundos.
+    </div>
+
     <div id="downloadBox" class="download-box">
       <p>✅ Licencia válida. Ya puedes abrir o descargar el contenido.</p>
 
@@ -286,25 +303,30 @@
       IMPORTANTE:
       - NO pongas Seller Key aquí.
       - Esta versión usa KeyAuth como filtro.
-      - El link directo queda en el HTML/JS, por lo tanto NO es ocultamiento real al 100%.
-      - Para ocultarlo de verdad se necesita PHP, Worker o servidor.
+      - El link directo queda dentro del HTML/JS.
+      - Para ocultarlo de verdad al 100%, se necesita PHP, Worker o servidor.
     */
 
-    const KEYAUTH_NAME = "ybwdiospecho";
-    const KEYAUTH_OWNERID = "RZsbvRZczd";
+    const KEYAUTH_NAME = "NOMBRE_DE_TU_APP";
+    const KEYAUTH_OWNERID = "TU_OWNER_ID";
     const KEYAUTH_VERSION = "1.0";
 
-    const DOWNLOAD_URL = "https://download1580.mediafire.com/uuspb394n13gasX3sdarKzB6gxeZimocarQOZGPkYvs9yLxDqL0tPa-9aeuAmVoQ-_QTthkuAdHkh1Mbd1qNjLq4Zw_DfZYyUtMyP0sITjQdaU08lL9srFhXpAS9auWiT6HBkppVM4YWARrRgMnN5gZqvz4YzFuGqGsfEC4gX8hq/v60fmc6zzdo8a5n/HEADSHOT+BODY+RAUDA+FF+MAX.imazingapp";
+    const DOWNLOAD_URL = "TU_LINK_DIRECTO_MEDIAFIRE";
 
     const KEYAUTH_API = "https://keyauth.win/api/1.3/";
+    const CHECK_EVERY_MS = 10000;
 
     let sessionId = null;
+    let licenciaActual = "";
+    let monitorInterval = null;
+    let isChecking = false;
 
     const licenseInput = document.getElementById("licenseInput");
     const confirmCheck = document.getElementById("confirmCheck");
     const accessBtn = document.getElementById("accessBtn");
     const resetBtn = document.getElementById("resetBtn");
     const statusBox = document.getElementById("statusBox");
+    const monitorBox = document.getElementById("monitorBox");
     const downloadBox = document.getElementById("downloadBox");
     const downloadLink = document.getElementById("downloadLink");
 
@@ -323,13 +345,23 @@
       accessBtn.textContent = "Validar licencia";
     }
 
+    function ocultarDescarga() {
+      downloadBox.style.display = "none";
+      downloadLink.href = "#";
+      monitorBox.style.display = "none";
+    }
+
     function reiniciar() {
+      detenerMonitorLicencia();
+
       sessionId = null;
+      licenciaActual = "";
+      isChecking = false;
+
       licenseInput.value = "";
       confirmCheck.checked = false;
 
-      downloadBox.style.display = "none";
-      downloadLink.href = "#";
+      ocultarDescarga();
 
       resetBtn.classList.add("hidden");
       accessBtn.classList.remove("hidden");
@@ -434,8 +466,8 @@
     async function validarLicencia() {
       const licenseKey = licenseInput.value.trim();
 
-      downloadBox.style.display = "none";
-      downloadLink.href = "#";
+      detenerMonitorLicencia();
+      ocultarDescarga();
 
       if (!licenseKey) {
         setStatus("error", "Ingresa una licencia primero.");
@@ -458,22 +490,103 @@
 
         await loginLicencia(licenseKey);
 
+        licenciaActual = licenseKey;
+
         setStatus(
           "ok",
-          "✅ Licencia válida.\n\nEl acceso al contenido fue habilitado correctamente."
+          "✅ Licencia válida.\n\nEl acceso al contenido fue habilitado correctamente.\n\nLa licencia se verificará automáticamente cada 10 segundos."
         );
 
         downloadLink.href = DOWNLOAD_URL;
         downloadBox.style.display = "block";
+        monitorBox.style.display = "block";
 
         accessBtn.classList.add("hidden");
         resetBtn.classList.remove("hidden");
+
+        iniciarMonitorLicencia(licenseKey);
 
       } catch (error) {
         setStatus("error", "❌ " + error.message);
         liberarBoton();
       }
     }
+
+    function iniciarMonitorLicencia(licenseKey) {
+      detenerMonitorLicencia();
+
+      licenciaActual = licenseKey;
+
+      monitorInterval = setInterval(async () => {
+        await verificarLicenciaEnVivo();
+      }, CHECK_EVERY_MS);
+    }
+
+    function detenerMonitorLicencia() {
+      if (monitorInterval) {
+        clearInterval(monitorInterval);
+        monitorInterval = null;
+      }
+    }
+
+    async function verificarLicenciaEnVivo() {
+      if (isChecking) return;
+      if (!licenciaActual) return;
+
+      isChecking = true;
+
+      try {
+        if (!sessionId) {
+          await inicializarKeyAuth();
+        }
+
+        const data = await keyauthRequest({
+          type: "license",
+          key: licenciaActual,
+          sessionid: sessionId,
+          name: KEYAUTH_NAME,
+          ownerid: KEYAUTH_OWNERID,
+          hwid: getBrowserDeviceId(),
+          code: ""
+        });
+
+        if (!data.success) {
+          bloquearPorLicenciaInactiva(data.message || "Licencia inactiva, vencida o eliminada.");
+          return;
+        }
+
+        console.log("Licencia activa:", new Date().toLocaleTimeString());
+
+      } catch (error) {
+        bloquearPorLicenciaInactiva("No se pudo verificar la licencia. Puede estar vencida, eliminada o sin conexión.");
+      } finally {
+        isChecking = false;
+      }
+    }
+
+    function bloquearPorLicenciaInactiva(motivo) {
+      detenerMonitorLicencia();
+
+      ocultarDescarga();
+
+      setStatus(
+        "error",
+        "❌ Acceso bloqueado.\n\n" +
+        motivo +
+        "\n\nLa página se reiniciará automáticamente."
+      );
+
+      accessBtn.classList.add("hidden");
+      resetBtn.classList.add("hidden");
+
+      setTimeout(() => {
+        location.reload();
+      }, 2500);
+    }
+
+    window.addEventListener("beforeunload", () => {
+      detenerMonitorLicencia();
+    });
   </script>
 </body>
 </html>
